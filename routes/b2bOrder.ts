@@ -13,11 +13,35 @@ import { challenges } from '../data/datacache'
 import * as security from '../lib/insecurity'
 import * as utils from '../lib/utils'
 
+const hasBreakout = (data: string) => {
+  return /constructor|__proto__|prototype|process|mainModule|require|child_process|exec|spawn|\beval\b|global|\bthis\b|\bimport\b|Buffer|fromCharCode|fromCodePoint|atob|btoa|unescape|decodeURI|Reflect|Proxy|caller|callee|getPrototypeOf|getOwnProperty|\\x|\\u|`/i.test(data) || /\bFunction\b/.test(data)
+}
+
 export function b2bOrder () {
   return ({ body }: Request, res: Response, next: NextFunction) => {
     if (utils.isChallengeEnabled(challenges.rceChallenge) || utils.isChallengeEnabled(challenges.rceOccupyChallenge)) {
+      if (typeof body.orderLinesData === 'object' && body.orderLinesData !== null) {
+        res.json({ cid: body.cid, orderNo: uniqueOrderNumber(), paymentDue: dateTwoWeeksFromNow() })
+        return
+      }
       const orderLinesData = body.orderLinesData || ''
+      if (!orderLinesData) {
+        res.json({ cid: body.cid, orderNo: uniqueOrderNumber(), paymentDue: dateTwoWeeksFromNow() })
+        return
+      }
+      if (typeof orderLinesData === 'string') {
+        try {
+          JSON.parse(orderLinesData)
+          res.json({ cid: body.cid, orderNo: uniqueOrderNumber(), paymentDue: dateTwoWeeksFromNow() })
+          return
+        } catch {
+          // Not valid JSON, continue with challenge evaluation
+        }
+      }
       try {
+        if (typeof orderLinesData === 'string' && hasBreakout(orderLinesData)) {
+          throw new Error('Sandbox breakout detected')
+        }
         const sandbox = { safeEval, orderLinesData }
         vm.createContext(sandbox)
         vm.runInContext('safeEval(orderLinesData)', sandbox, { timeout: 2000 })
