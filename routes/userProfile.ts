@@ -7,6 +7,8 @@ import { type Request, type Response, type NextFunction } from 'express'
 import { AllHtmlEntities as Entities } from 'html-entities'
 import config from 'config'
 import fs from 'node:fs/promises'
+// @ts-expect-error FIXME due to non-existing type definitions for notevil
+import { eval as safeEval } from 'notevil'
 
 import * as challengeUtils from '../lib/challengeUtils'
 import { themes } from '../views/themes/themes'
@@ -16,6 +18,10 @@ import { UserModel } from '../models/user'
 import * as utils from '../lib/utils'
 
 const entities = new Entities()
+
+const hasBreakout = (data: string) => {
+  return /constructor|__proto__|prototype|process|mainModule|require|child_process|exec|spawn|\beval\b|global|\bthis\b|\bimport\b|Buffer|fromCharCode|fromCodePoint|atob|btoa|unescape|decodeURI|Reflect|Proxy|caller|callee|getPrototypeOf|getOwnProperty|\\x|\\u|`/i.test(data) || /\bFunction\b/.test(data)
+}
 
 function favicon () {
   return utils.extractFilename(config.get('application.favicon'))
@@ -51,17 +57,25 @@ export function getUserProfile () {
 
     let username = user.username
 
-    if (username?.match(/#{(.*)}/) !== null && utils.isChallengeEnabled(challenges.usernameXssChallenge)) {
+    const sstiMatch = username?.match(/#{(.*)}/)
+    if (sstiMatch !== null && sstiMatch !== undefined && utils.isChallengeEnabled(challenges.usernameXssChallenge)) {
       req.app.locals.abused_ssti_bug = true
+      const code = sstiMatch[1]
+      try {
+        if (!code || hasBreakout(code)) {
+          throw new Error('Blocked or empty expression')
+        }
+        username = String(safeEval(code))
+      } catch (err) {
+        username = '\\' + username
+      }
+    } else {
+      username = '\\' + username
     }
-    username = '\\' + username
 
     const themeKey = config.get<string>('application.theme') as keyof typeof themes
     const theme = themes[themeKey] || themes['bluegrey-lightgreen']
 
-    if (username) {
-      template = template.replace(/_username_/g, username)
-    }
     template = template.replace(/_emailHash_/g, security.hash(user?.email))
     template = template.replace(/_title_/g, entities.encode(config.get<string>('application.name')))
     template = template.replace(/_favicon_/g, favicon())
@@ -85,7 +99,8 @@ export function getUserProfile () {
         'Content-Security-Policy': CSP
       })
 
-      res.send(fn(user))
+      const html = fn(user).replace(/_username_/g, () => username ?? '')
+      res.send(html)
     } catch (err) {
       next(new Error('Blocked illegal activity by ' + req.socket.remoteAddress))
     }
